@@ -10,7 +10,7 @@ contract consultant. Run it with `npm start` (or `node server.js`) and open
   evidence: `node server.js` -> `ram-crm serving C:\Users\krish\Downloads\FWAI_Project\ram-crm at http://127.0.0.1:5173`; `Invoke-WebRequest` returned `200` for `/`, `/styles.css`, `/js/app.js`, `/js/data.js` and each view module.
 
 **Data model, seed, validators, selectors: DONE**
-  evidence: `node --test` -> `tests 13, pass 13, fail 0` (see the ledger for what each test covers).
+  evidence: `node --test` -> `tests 17, pass 17, fail 0` (see the ledger for what each test covers).
 
 **Morning view (dashboard): DONE**
   evidence: `shots/dashboard-1440.png` and `shots/dashboard-375.png`, rendered over CDP; the six questions and the money-at-risk figure are computed from records, not typed in.
@@ -38,6 +38,15 @@ contract consultant. Run it with `npm start` (or `node server.js`) and open
 
 **Search, history, structured losses, plain-language answers (PRD 9, 10): DONE**
   evidence: `node tools/interact.mjs` -> ask returns `There are 6 open orders...`; an unrecognised question returns `Not recorded...`; loss breakdown groups by structured reason.
+
+**Requirement fingerprinting: DONE**
+  evidence: `shots/fingerprint-1440.png` and the dashboard section; REQ-2024-004 code `CONN-NAVY-B3-MILDTL38999` matches REQ-2024-008 at 50%. Test `fingerprinting: same shape of requirement shares a code and finds prior matches` passes.
+
+**Deadline-chain view: DONE**
+  evidence: `shots/dashboard-1440.png` "Deadline chain" section; PO-3002 breach (`PDI passed is blocked`), PO-3005 breach (slack -4 d), PO-3003 ok (+17 d). Test `deadline chain: names the binding constraint and computes slack` passes.
+
+**Capacity collision warning: DONE**
+  evidence: `shots/dashboard-1440.png` and `shots/capacity-1440.png`; Aureus 104% and Bluewave 120% show as collisions, Orion 98% as tight. Tests `capacity collision: ...` and `a firm commitment beyond capacity warns and still saves` pass. Shown as advisory, because the global-vs-per-order reading is C-10 and unconfirmed.
 
 **Roles, approvals, audit (PRD 11): PARTIAL**
   evidence: approvals and an audit trail exist and render; per-role permissions are not enforced, because stage 1 has no authentication or user accounts. This is the TECH-STACK stage boundary, not an oversight.
@@ -68,7 +77,10 @@ contract consultant. Run it with `npm start` (or `node server.js`) and open
 | Claim | Command that proves it | Result |
 |---|---|---|
 | All modules are syntactically valid | `node --check <file>` per module | 16/16 `ok` |
-| The ten invariants hold | `node --test` | `pass 13, fail 0` |
+| The invariants hold | `node --test` | `pass 17, fail 0` |
+| Fingerprinting finds prior matches | `node --test` -> `fingerprinting: ...` | `pass`; REQ-2024-004 matches REQ-2024-008 at 50% |
+| The deadline chain names the binding link | `node --test` -> `deadline chain: ...` | `pass`; PO-3002 breach, PO-3003 ok |
+| Capacity collisions are flagged | `node --test` -> capacity tests | `pass`; Aureus 2600/2500 and Bluewave 2400/2000 collide |
 | The dev server cannot be walked out of its folder | `curl` `/%2e%2e/..%2f..%2fWindows%2fwin.ini` | `403`; `/` and `/js/app.js` still `200` |
 | Acceptance closes an order | `node --test` -> `recording acceptance closes the order...` | `pass`; open orders 6 -> 5 |
 | A lost status cannot bypass the reason | `node --test` -> `a requirement cannot be marked lost...` | `pass`; status unchanged |

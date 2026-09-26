@@ -299,6 +299,204 @@ export function orphanPOs(state) {
   });
 }
 
+/* ---------- requirement fingerprinting ---------- */
+
+const FP_STOP = new Set([
+  'the', 'and', 'for', 'with', 'from', 'type', 'grade', 'standard', 'spec', 'per', 'each',
+  'set', 'sets', 'unit', 'units', 'nos', 'of', 'to', 'in', 'on', 'a', 'an', 'via', 'into', 'with',
+]);
+
+const AGENCY_CODES = {
+  'indian army': 'ARMY', 'indian navy': 'NAVY', 'indian air force': 'IAF', 'drdo': 'DRDO',
+  'bsf': 'BSF', 'indian coast guard': 'ICG', 'ministry of defence': 'MOD',
+};
+
+function qtyBand(q) {
+  const n = Number(q || 0);
+  if (n <= 100) return 'B1';
+  if (n <= 500) return 'B2';
+  if (n <= 2000) return 'B3';
+  if (n <= 10000) return 'B4';
+  return 'B5';
+}
+
+// A short, stable signature of a requirement: category, agency, quantity band and
+// the governing standard. This is what makes "have we seen this before?" answerable
+// even when the wording of two tenders differs.
+export function fingerprintOf(req) {
+  const raw = `${req.product || ''} ${req.specs || ''}`.toLowerCase();
+  const standards = [...new Set(raw.match(/mil-[a-z]+-?\d+[a-z0-9]*/g) || [])];
+  const keywords = [...new Set(
+    raw.replace(/[^a-z0-9]+/g, ' ').split(' ').filter((t) => t.length >= 3 && !FP_STOP.has(t))
+  )];
+  const cat = String(req.category || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4) || 'GEN';
+  const agency =
+    AGENCY_CODES[String(req.agency || '').toLowerCase()] ||
+    String(req.agency || '').slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ANY';
+  const band = qtyBand(req.quantity);
+  const std = standards[0] ? standards[0].toUpperCase().replace(/[^A-Z0-9]/g, '') : 'GEN';
+  const tokens = new Set([
+    ...keywords,
+    ...standards,
+    String(req.category || '').toLowerCase(),
+    String(req.agency || '').toLowerCase().replace(/[^a-z]/g, ''),
+  ]);
+  return {
+    code: `${cat}-${agency}-${band}-${std}`,
+    parts: { category: req.category, agency: req.agency, band, standards, keywordCount: keywords.length },
+    keywords,
+    standards,
+    tokens,
+  };
+}
+
+export function fingerprintIndex(state) {
+  return (state.requirements || []).map((r) => ({ requirement: r, fingerprint: fingerprintOf(r) }));
+}
+
+// Prior requirements that look like this one, ranked by token overlap and an exact
+// fingerprint-code match. Deliberately stricter than the category comparables.
+export function fingerprintMatches(state, requirementId) {
+  const req = requirementById(state, requirementId);
+  if (!req) return [];
+  const base = fingerprintOf(req);
+  return (state.requirements || [])
+    .filter((r) => r.id !== requirementId)
+    .map((r) => {
+      const f = fingerprintOf(r);
+      let inter = 0;
+      for (const t of f.tokens) if (base.tokens.has(t)) inter += 1;
+      const union = new Set([...base.tokens, ...f.tokens]).size || 1;
+      const q = latestQuote(state, r.id);
+      const oemId = q && q.lines && q.lines[0] ? q.lines[0].oemId : null;
+      return {
+        requirementId: r.id,
+        ref: r.ref,
+        agency: r.agency,
+        product: r.product,
+        category: r.category,
+        code: f.code,
+        sameCode: f.code === base.code,
+        score: inter / union,
+        outcome: r.status,
+        quotedTotal: q ? q.quotedTotal : null,
+        winningPrice: r.winningPrice || null,
+        lossReason: r.lossReason || null,
+        decisionAt: r.decisionAt || null,
+        oemName: oemId && oemById(state, oemId) ? oemById(state, oemId).name : '\u2014',
+      };
+    })
+    .filter((m) => m.sameCode || m.score >= 0.15)
+    .sort((a, b) => (Number(b.sameCode) - Number(a.sameCode)) || (b.score - a.score))
+    .slice(0, 8);
+}
+
+/* ---------- deadline chain ---------- */
+
+// The dependent sequence of dates behind one order: submission, required delivery,
+// the PO, the committed delivery deadline, and the projected dispatch/delivery and
+// acceptance, with the binding constraint named.
+export function deadlineChain(state, orderId) {
+  const order = orderById(state, orderId);
+  if (!order) return null;
+  const req = requirementById(state, order.requirementId);
+  const m = orderMetrics(state, order);
+  const today = todayISO();
+  const links = [];
+  const add = (label, date, type, note) => {
+    if (!date) return;
+    links.push({ label, date, type, note: note || '', days: diffDays(today, date) });
+  };
+  add('Submission deadline', req && req.submissionDeadline, 'hard', 'agency gate');
+  add('Required delivery (agency)', req && req.requiredDeliveryDate, 'hard', 'agency gate');
+  add('PO placed', order.poDate, 'done');
+  add('Committed delivery deadline', order.deliveryDeadline, 'hard', 'contractual');
+  const dispatch = m.steps.find((s) => s.step === 'Dispatch');
+  add('Expected dispatch', dispatch && dispatch.expectedDate, 'projected');
+  add('Expected delivered', m.expectedDelivery, 'projected');
+  const accepted = m.steps.find((s) => s.step === 'Accepted');
+  add('Expected accepted', accepted && accepted.expectedDate, 'projected');
+
+  const blocked = m.steps.filter((s) => s.status === 'blocked' || s.status === 'held');
+  const slack = m.expectedDelivery && order.deliveryDeadline
+    ? diffDays(m.expectedDelivery, order.deliveryDeadline)
+    : null;
+
+  let status = 'ok';
+  let binding = 'Expected delivery against the committed deadline';
+  if (blocked.length) {
+    status = 'breach';
+    binding = `${blocked[0].step} is ${blocked[0].status}`;
+  } else if (m.accepted < m.ordered && m.daysToDeadline != null && m.daysToDeadline < 0) {
+    status = 'breach';
+    binding = 'Acceptance is outstanding past the committed deadline';
+  } else if (slack != null && slack < 0) {
+    status = 'breach';
+    binding = 'Expected delivery is after the committed deadline';
+  } else if (slack != null && slack <= 7) {
+    status = 'tight';
+    binding = 'Less than a week of slack against the committed deadline';
+  }
+
+  // A compliance document that expires before expected delivery sits inside the chain.
+  const delivery = m.expectedDelivery || order.deliveryDeadline;
+  const documentRisks = (state.documents || [])
+    .filter((d) => d.requirementId === order.requirementId || (d.oemId && d.oemId === order.oemId))
+    .map((d) => ({ doc: d, s: documentStatus(state, d) }))
+    .filter((x) => x.s.days != null && delivery && x.doc.expiryDate <= delivery);
+
+  return { order, requirement: req, metrics: m, links, slack, status, binding, blocked, documentRisks };
+}
+
+const CHAIN_SEVERITY = { breach: 0, tight: 1, ok: 2 };
+
+export function deadlineChains(state) {
+  return openOrders(state)
+    .map((o) => deadlineChain(state, o.id))
+    .filter(Boolean)
+    .sort((a, b) => (CHAIN_SEVERITY[a.status] - CHAIN_SEVERITY[b.status]) || ((a.slack ?? 9999) - (b.slack ?? 9999)));
+}
+
+/* ---------- OEM capacity collision ---------- */
+
+export function oemCapacity(state, oemId) {
+  const oem = oemById(state, oemId);
+  const capacity = Number((oem && oem.capacityQty) || 0);
+  const firm = (state.oemRequests || []).filter(
+    (r) => r.oemId === oemId && r.type === 'firm' && r.status === 'responded'
+  );
+  const committed = sum(firm, (r) => r.qty);
+  const map = new Map();
+  for (const r of firm) map.set(r.requirementId, (map.get(r.requirementId) || 0) + Number(r.qty || 0));
+  const byRequirement = [...map.entries()]
+    .map(([rid, qty]) => {
+      const req = requirementById(state, rid);
+      return { requirementId: rid, ref: req ? req.ref : rid, product: req ? req.product : '', qty };
+    })
+    .sort((a, b) => b.qty - a.qty);
+  const remaining = capacity - committed;
+  const util = capacity ? committed / capacity : 0;
+  const level = !capacity ? 'unknown' : committed > capacity ? 'collision' : util >= 0.9 ? 'tight' : 'ok';
+  return {
+    oem,
+    capacity,
+    period: oem ? oem.capacityPeriod : '',
+    committed,
+    remaining,
+    util,
+    level,
+    byRequirement,
+  };
+}
+
+export function capacityCollisions(state) {
+  const SEV = { collision: 0, tight: 1 };
+  return (state.oems || [])
+    .map((o) => oemCapacity(state, o.id))
+    .filter((c) => c.level === 'collision' || c.level === 'tight')
+    .sort((a, b) => (SEV[a.level] - SEV[b.level]) || (b.util - a.util));
+}
+
 /* ---------- the morning view ---------- */
 
 export function dashboard(state) {

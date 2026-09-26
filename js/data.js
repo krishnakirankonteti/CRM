@@ -136,6 +136,18 @@ export function createSeed() {
     },
   ];
 
+  // OEM capacity ceiling for the booked window. Used by the capacity collision
+  // warning. The global-vs-per-order reading is PRD open question C-10 and is not
+  // confirmed by the client, so the warning is advisory and shown as such (A-24).
+  const capacityByOem = {
+    'oem-01': 2500, 'oem-02': 3500, 'oem-03': 1200, 'oem-04': 500, 'oem-05': 1000,
+    'oem-06': 300, 'oem-07': 6000, 'oem-08': 600, 'oem-09': 800, 'oem-10': 2000,
+  };
+  for (const o of oems) {
+    o.capacityQty = capacityByOem[o.id] || 0;
+    o.capacityPeriod = 'per quarter';
+  }
+
   const requirements = [
     {
       id: 'req-018', ref: 'REQ-2024-018', agency: 'Indian Army', product: 'Rugged tactical power supplies',

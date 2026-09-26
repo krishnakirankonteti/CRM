@@ -1,6 +1,6 @@
 import { badge, card, esc, kpi, meter, section, table } from '../components.js';
 import { fmtDate, money, num, symbolOf } from '../format.js';
-import { coverage, dashboard, orderExposure } from '../selectors.js';
+import { capacityCollisions, coverage, dashboard, deadlineChains, fingerprintIndex, fingerprintMatches, orderExposure } from '../selectors.js';
 
 export function render(state) {
   const s = symbolOf(state.meta.currency);
@@ -88,6 +88,52 @@ export function render(state) {
     ],
   }));
 
+  const caps = capacityCollisions(state);
+  const chains = deadlineChains(state);
+  const chainsAtBreach = chains.filter((c) => c.status === 'breach').length;
+  const collisions = caps.filter((c) => c.level === 'collision').length;
+
+  const capRows = caps.map((c) => ({
+    cells: [
+      `<a href="#/oems/${c.oem.id}">${esc(c.oem.name)}</a>`,
+      num(c.capacity),
+      num(c.committed),
+      `<strong style="color:${c.remaining < 0 ? 'var(--risk)' : 'inherit'}">${num(c.remaining)}</strong>`,
+      `${Math.round(c.util * 100)}%`,
+      c.level === 'collision' ? badge('collision', 'risk') : badge('tight', 'warn'),
+      `<span class="small muted">${c.byRequirement.map((b) => `${esc(b.ref)} ${num(b.qty)}`).join(' &middot; ')}</span>`,
+    ],
+  }));
+
+  const chainRows = chains.map((c) => ({
+    cells: [
+      `<a href="#/orders/${c.order.id}">${esc(c.order.poNumber)}</a>`,
+      c.requirement ? `<a href="#/requirements/${c.requirement.id}">${esc(c.requirement.ref)}</a>` : '\u2014',
+      `<span class="small">${esc(c.binding)}</span>`,
+      fmtDate(c.order.deliveryDeadline),
+      fmtDate(c.metrics.expectedDelivery),
+      c.slack == null ? '\u2014' : `${c.slack} d`,
+      c.status === 'breach' ? badge('breach', 'risk') : c.status === 'tight' ? badge('tight', 'warn') : badge('ok', 'ok'),
+    ],
+  }));
+
+  const openFingerprints = fingerprintIndex(state)
+    .filter((x) => ['received', 'qualifying', 'quoted', 'submitted'].includes(x.requirement.status));
+  const fpRows = openFingerprints.map((x) => {
+    const matches = fingerprintMatches(state, x.requirement.id);
+    const best = matches[0];
+    return {
+      cells: [
+        `<a href="#/requirements/${x.requirement.id}">${esc(x.requirement.ref)}</a>`,
+        esc(x.requirement.product),
+        `<span class="mono tiny">${esc(x.fingerprint.code)}</span>`,
+        num(matches.length),
+        best ? `${esc(best.ref)} &middot; ${Math.round(best.score * 100)}%${best.sameCode ? ' &middot; same code' : ''}` : '\u2014',
+        best ? (best.outcome === 'won' ? badge('won') : best.outcome === 'lost' ? badge('lost') : badge(best.outcome)) : '\u2014',
+      ],
+    };
+  });
+
   return `
   <div class="page-head">
     <div class="eyebrow">Morning view &middot; ${fmtDate(d.asOf)}</div>
@@ -117,6 +163,8 @@ export function render(state) {
       ${kpi({ label: 'Payments pending', value: money(d.paymentsPending, s), sub: `${d.unpaidInvoices.length} invoice(s)` })}
       ${kpi({ label: 'OEM responses pending', value: num(d.oemPendingCount), sub: d.oemPending[0] ? `oldest waited ${d.oemPending[0].aging} day(s)` : 'none waiting' })}
       ${kpi({ label: 'Documents expiring', value: num(d.docsExpiring.length), sub: 'within 90 days, or expired', tone: d.docsExpiring.some((x) => x.s.days < 0) ? 'risk' : 'warn' })}
+      ${kpi({ label: 'Capacity collisions', value: num(collisions), sub: `${caps.length} OEM(s) at or near capacity`, tone: collisions ? 'risk' : 'warn' })}
+      ${kpi({ label: 'Deadline chains at breach', value: num(chainsAtBreach), sub: `${chains.length} open chain(s)`, tone: chainsAtBreach ? 'risk' : 'ok' })}
     </div>
   </section>
 
@@ -127,6 +175,36 @@ export function render(state) {
     body: card({ body: table({ head: [
       { label: 'PO' }, { label: 'Product' }, { label: 'Outstanding' }, { label: 'Deadline' }, { label: 'Why flagged' }, { label: 'Value at risk', num: true },
     ], rows: riskyRows, empty: 'No order is currently flagged for delivery risk.' }), flush: true }),
+  })}
+
+  ${section({
+    eyebrow: 'Capacity collision warning',
+    title: 'OEM capacity, committed against the ceiling',
+    lead: 'Firm commitments summed across every requirement, against the booked-window capacity of each OEM. A collision means the same OEM has been committed beyond what it can supply. Advisory, pending the client answer on C-10.',
+    body: card({ body: table({ head: [
+      { label: 'OEM' }, { label: 'Capacity', num: true }, { label: 'Committed', num: true }, { label: 'Remaining', num: true },
+      { label: 'Used', num: true }, { label: 'Level' }, { label: 'Committed on' },
+    ], rows: capRows, empty: 'No OEM is at or beyond capacity.' }), flush: true }),
+  })}
+
+  ${section({
+    eyebrow: 'Deadline chain',
+    title: 'Every open order, its binding deadline and its slack',
+    lead: 'The dependent dates behind each order. The binding constraint is named, so a slip is visible before the agency asks. Sorted worst first.',
+    body: card({ body: table({ head: [
+      { label: 'PO' }, { label: 'Requirement' }, { label: 'Binding constraint' }, { label: 'Committed' },
+      { label: 'Expected' }, { label: 'Slack', num: true }, { label: 'Chain' },
+    ], rows: chainRows, empty: 'No open deadline chains.' }), flush: true }),
+  })}
+
+  ${section({
+    eyebrow: 'Requirement fingerprinting',
+    title: 'Open requirements and whether we have seen them before',
+    lead: 'A short signature per requirement: category, agency, quantity band and governing standard. Where a prior requirement shares it, the past outcome is one click away.',
+    body: card({ body: table({ head: [
+      { label: 'Requirement' }, { label: 'Product' }, { label: 'Fingerprint' }, { label: 'Matches', num: true },
+      { label: 'Closest match' }, { label: 'Outcome' },
+    ], rows: fpRows, empty: 'No open requirements to fingerprint.' }), flush: true }),
   })}
 
   ${section({

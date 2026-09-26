@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 
 import { createSeed } from '../js/data.js';
 import {
+  capacityCollisions,
   coverage,
+  deadlineChain,
   deliveryRisk,
+  fingerprintMatches,
+  fingerprintOf,
+  oemCapacity,
   openOrders,
   orderMetrics,
   orphanPOs,
@@ -152,5 +157,56 @@ test('recording acceptance closes the order and reduces the open-orders count', 
   const order = store.getState().orders.find((o) => o.id === 'po-3004');
   assert.equal(order.status, 'accepted');
   assert.equal(openOrders(store.getState()).length, before - 1);
+  store.reset();
+});
+
+test('fingerprinting: same shape of requirement shares a code and finds prior matches', () => {
+  const s = createSeed();
+  const a = fingerprintOf(s.requirements.find((r) => r.id === 'req-004'));
+  assert.ok(a.code.length > 6, 'a code is produced');
+  assert.ok(a.parts.standards.length >= 1, 'the governing standard is captured');
+  const matches = fingerprintMatches(s, 'req-004');
+  assert.ok(matches.length >= 1);
+  assert.ok(matches.some((m) => m.requirementId === 'req-008'), 'the other MIL-DTL-38999 requirement is matched');
+  assert.ok(matches[0].score > 0, 'matches carry an overlap score');
+});
+
+test('deadline chain: names the binding constraint and computes slack', () => {
+  const s = createSeed();
+  const blocked = deadlineChain(s, 'po-3002');
+  assert.equal(blocked.status, 'breach');
+  assert.ok(/blocked|held/i.test(blocked.binding));
+  assert.ok(blocked.links.length >= 4, 'the chain lists its links');
+
+  const onTrack = deadlineChain(s, 'po-3003');
+  assert.equal(onTrack.status, 'ok');
+  assert.ok(onTrack.slack > 7);
+
+  const late = deadlineChain(s, 'po-3005');
+  assert.equal(late.status, 'breach');
+  assert.ok(late.slack < 0, 'a projected slip produces negative slack');
+});
+
+test('capacity collision: firm commitments beyond the ceiling are flagged', () => {
+  const s = createSeed();
+  const aureus = oemCapacity(s, 'oem-01');
+  assert.equal(aureus.capacity, 2500);
+  assert.equal(aureus.committed, 2600);
+  assert.equal(aureus.level, 'collision');
+  assert.ok(aureus.remaining < 0);
+
+  const collisions = capacityCollisions(s);
+  assert.ok(collisions.some((c) => c.oem.id === 'oem-01'));
+  assert.ok(collisions.some((c) => c.oem.id === 'oem-10'));
+  for (const c of collisions) assert.ok(c.level === 'collision' || c.level === 'tight');
+});
+
+test('a firm commitment beyond capacity warns and still saves', () => {
+  store.reset();
+  const before = store.getState().oemRequests.length;
+  const res = store.addOemResponse({ requirementId: 'req-011', oemId: 'oem-01', type: 'firm', qty: 500, unitPrice: 100, leadTimeDays: 10 });
+  assert.equal(res.ok, true);
+  assert.ok(res.warning && /collision/i.test(res.warning), 'the over-commitment is warned about');
+  assert.equal(store.getState().oemRequests.length, before + 1, 'the record is still saved');
   store.reset();
 });

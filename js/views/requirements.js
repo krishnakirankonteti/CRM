@@ -2,7 +2,7 @@ import { badge, card, esc, kv, meter, openModal, section, table } from '../compo
 import { LOSS_REASONS, RESPONSE_TYPES } from '../data.js';
 import { fmtDate, money, num, symbolOf } from '../format.js';
 import {
-  comparables, coverage, latestQuote, oemById, oemCommittedTo,
+  comparables, coverage, fingerprintMatches, fingerprintOf, latestQuote, oemById, oemCommittedTo,
   quotesFor, requirementById, requestsFor,
 } from '../selectors.js';
 import * as store from '../store.js';
@@ -58,6 +58,8 @@ function detail(state, id) {
   const quote = latestQuote(state, r.id);
   const history = quotesFor(state, r.id);
   const comps = comparables(state, r.id);
+  const fp = fingerprintOf(r);
+  const fpMatches = fingerprintMatches(state, r.id);
   const linkedDocs = state.documents.filter((d) => d.requirementId === r.id);
   const linkedOrders = state.orders.filter((o) => o.requirementId === r.id);
 
@@ -181,7 +183,37 @@ function detail(state, id) {
   })}
 
   ${section({
-    eyebrow: 'Module 4 \u00B7 history before pricing',
+    eyebrow: 'Fingerprint',
+    title: 'What this requirement looks like, and what it looked like before',
+    lead: 'A stable signature from category, agency, quantity band and governing standard. Two requirements sharing a code are the same shape of job, even when the tender wording differs.',
+    body: card({ body: `
+      <div class="between" style="flex-wrap:wrap;gap:12px;margin-bottom:14px">
+        <div><div class="kpi__label">Fingerprint code</div><div class="mono" style="font-size:1.15rem">${esc(fp.code)}</div></div>
+        <div class="chips">
+          <span class="badge badge--info">${esc(fp.parts.category || 'Uncategorised')}</span>
+          <span class="badge">${esc(fp.parts.agency || 'Unknown agency')}</span>
+          <span class="badge">qty band ${esc(fp.parts.band)}</span>
+          ${fp.parts.standards.map((x) => `<span class="badge badge--muted">${esc(x)}</span>`).join('')}
+        </div>
+      </div>
+      ${table({ head: [
+        { label: 'Prior requirement' }, { label: 'Product' }, { label: 'Match' }, { label: 'Same code' }, { label: 'Outcome' }, { label: 'Quoted', num: true }, { label: 'Winning', num: true },
+      ], rows: fpMatches.map((m) => ({
+        cells: [
+          `<a href="#/requirements/${m.requirementId}">${esc(m.ref)}</a>`,
+          esc(m.product),
+          `${Math.round(m.score * 100)}%`,
+          m.sameCode ? badge('yes', 'ok') : badge('near', 'muted'),
+          m.outcome === 'won' ? badge('won') : m.outcome === 'lost' ? badge('lost') : badge(m.outcome),
+          m.quotedTotal != null ? money(m.quotedTotal, s) : '\u2014',
+          m.outcome === 'lost' && m.winningPrice ? money(m.winningPrice, s) : '\u2014',
+        ],
+      })), empty: 'No similar requirement on record yet.' })}
+    ` }),
+  })}
+
+  ${section({
+    eyebrow: 'Module 4 &middot; history before pricing',
     title: 'Comparable past bids',
     lead: 'Same category, won or lost, shown before any price is set. This is what replaces starting from scratch.',
     body: card({ body: table({ head: [

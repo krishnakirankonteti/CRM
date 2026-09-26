@@ -121,11 +121,29 @@ export function addOemResponse(draft) {
     respondedAt: todayISO(),
     notes: draft.notes || '',
   };
+
+  // Advisory capacity check: a firm commitment that pushes an OEM past its
+  // capacity (or close to it) is saved, but the collision is stated plainly.
+  let warning = null;
+  if (record.type === 'firm') {
+    const oem = state.oems.find((o) => o.id === record.oemId);
+    const cap = Number((oem && oem.capacityQty) || 0);
+    const already = state.oemRequests
+      .filter((r) => r.oemId === record.oemId && r.type === 'firm' && r.status === 'responded')
+      .reduce((a, r) => a + Number(r.qty || 0), 0);
+    const projected = already + record.qty;
+    if (cap && projected > cap) {
+      warning = `Capacity collision: ${oem.name} would be committed to ${projected} against a capacity of ${cap} ${oem.capacityPeriod || ''}. Saved, but the collision is now visible on the dashboard.`;
+    } else if (cap && projected >= cap * 0.9) {
+      warning = `Tight capacity: ${oem.name} would be at ${Math.round((projected / cap) * 100)}% of its ${cap} ${oem.capacityPeriod || ''} capacity.`;
+    }
+  }
+
   commit((s) => {
     s.oemRequests.push(record);
     audit({ entity: 'OEM response', entityId: record.id, field: 'recorded', from: '\u2014', to: `${record.type} ${record.qty}` });
   });
-  return { ok: true, record };
+  return { ok: true, record, warning };
 }
 
 export function recordLoss(draft) {

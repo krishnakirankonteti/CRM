@@ -1,6 +1,6 @@
 import { badge, card, esc, kv, meter, section, table } from '../components.js';
 import { fmtDate, money, num, symbolOf } from '../format.js';
-import { oemById, oemStats, requirementById } from '../selectors.js';
+import { oemById, oemCapacity, oemStats, requirementById } from '../selectors.js';
 
 export function render(state, params) {
   if (params && params.id) return detail(state, params.id);
@@ -47,6 +47,7 @@ function detail(state, id) {
   const o = oemById(state, id);
   if (!o) return `<p class="empty">No OEM with that id.</p>`;
   const st = oemStats(state, id);
+  const cap = oemCapacity(state, id);
   const responses = state.oemRequests.filter((q) => q.oemId === id);
 
   const responseRows = responses.map((q) => {
@@ -95,6 +96,12 @@ function detail(state, id) {
       ${card({ title: 'Firm quantity committed', body: `<div class="kpi__value">${num(st.committedQty)}</div><div class="small muted">${money(st.committedValue, s)}</div>` })}
       ${card({ title: 'Orders placed', body: `<div class="kpi__value">${num(st.orders.length)}</div><div class="small muted">${money(st.orderValue, s)}</div>` })}
       ${card({ title: 'Average lead time', body: `<div class="kpi__value">${st.avgLeadTime} d</div><div class="small muted">from firm responses</div>` })}
+      ${card({ title: 'Booked-window capacity', body: `
+        <div class="kpi__value" style="color:${cap.level === 'collision' ? 'var(--risk)' : cap.level === 'tight' ? 'var(--warn)' : 'inherit'}">${num(cap.committed)} / ${num(cap.capacity)}</div>
+        <div class="small muted">${cap.remaining < 0 ? `${num(Math.abs(cap.remaining))} over capacity` : `${num(cap.remaining)} remaining`} &middot; ${Math.round(cap.util * 100)}% used ${esc(cap.period || '')}</div>
+        <div style="margin-top:8px">${cap.level === 'collision' ? badge('collision', 'risk') : cap.level === 'tight' ? badge('tight', 'warn') : badge('within capacity', 'ok')}</div>
+        ${cap.byRequirement.length ? `<p class="small muted" style="margin-top:10px">${cap.byRequirement.map((b) => `${esc(b.ref)} ${num(b.qty)}`).join(' &middot; ')}</p>` : ''}
+      ` })}
     </div>`,
   })}
   ${section({ title: 'Requests and responses', body: card({ body: table({ head: [

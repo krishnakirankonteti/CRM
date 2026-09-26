@@ -163,7 +163,8 @@ export function openModal({ title, lead, fields, submitLabel, onSubmit }) {
       return;
     }
     close();
-    toast(result && result.message ? result.message : 'Saved.');
+    if (result && result.warning) toast(result.warning, 'risk');
+    else toast(result && result.message ? result.message : 'Saved.');
   });
 
   const first = form.querySelector('input, select, textarea');
