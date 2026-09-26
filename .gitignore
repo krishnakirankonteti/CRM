@@ -1,0 +1,9 @@
+# dependencies (none today; kept for when a build step is added)
+node_modules/
+
+# local and OS noise
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
